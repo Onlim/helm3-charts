@@ -143,6 +143,12 @@ nexusProxyRoute:
 
 persistence:
   enabled: true
+
+  ## set persistence type
+  ## valid values: pvc | hosPath
+  type: pvc
+  hostPath: /mnt/data
+
   accessMode: ReadWriteOnce
   ## If defined, storageClass: <storageClass>
   ## If set to "-", storageClass: "", which disables dynamic provisioning
