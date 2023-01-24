@@ -12,32 +12,84 @@
  */
 @Library(['private-pipeline-library', 'jenkins-shared', 'int-jenkins-shared']) _
 
+final jira = [
+    versionPrefix: '', project: 'INT', projectId: '12410',
+    credentialId : 'jenkins-jira', autoRelease: true, failOnError: true
+]
+
+final jiraVersionMappings = [
+  'nexus-iq-server': 'helm-iq',
+  'nexus-repository-manager': 'helm-nxrm',
+]
+
+final chartLocation = [
+  'nexus-iq-server': 'nexus-iq',
+  'nexus-repository-manager': 'nexus-repository-manager',
+]
+
+properties([
+  parameters([
+    choice(
+      choices: ['', 'nexus-iq-server', 'nexus-repository-manager'],
+      name: 'chart',
+      description: 'Chart to deploy.',
+    ),
+    string(
+      name: 'appVersion',
+      description: 'Version of the application image, like "1.139.0"',
+    ),
+    string(
+      name: 'chartVersion',
+      description: '(Optional) Version of the Chart, like "139.0.0". If omitted, it will be calculated from the appVersion.',
+    ),
+  ])
+])
+
+final chartVersion = calculateChartVersion(params.chartVersion, params.appVersion)
+
 dockerizedBuildPipeline(
   prepare: {
+    if (! params.chart) {
+      error('Chart parameter is required.')
+    }
+    if (! params.appVersion) {
+      error('The appVersion is required.')
+    }
     githubStatusUpdate('pending')
   },
-  buildImageId: 'docker-all.repo.sonatype.com/alpine/helm',
   buildAndTest: {
-    sh './build.sh'
+    sonatypeZionGitConfig()
+    runSafely "git checkout ${gitBranch(env)}"
+    runSafely "./upgrade.sh charts/${chartLocation[params.chart]} ${chartVersion} ${params.appVersion}"
+    runSafely './build.sh'
+    runSafely 'git add charts'
   },
   skipVulnerabilityScan: true,
   archiveArtifacts: 'docs/*',
   testResults: [],
   deployCondition: { true },
+  retentionPolicy: RetentionPolicy.TEN_BUILDS,
   deploy: {
-    final branch = gitBranch(env)
-
-    sh """
-      git config --global user.email "sonatype-ci@sonatype.com"
-      git config --global user.name "Sonatype CI"
-
-      git checkout ${branch}
-      git add docs
-      git commit -m 'Release Update'
-    """
+    runSafely 'git add docs'
+    runSafely "git commit -m 'Release Update for ${params.chart} ${chartVersion}'"
 
     sshagent(credentials: [sonatypeZionCredentialsId()]) {
-      sh 'git push'
+      runSafely 'git push'
+    }
+  },
+  postDeploy: {
+    // Verify Index.yaml
+    String version = verifyIndexYamlAndTarFile(params.chart)
+
+    // Set Jira Fix Version
+    jira.versionPrefix = jiraVersionMappings[chart]
+    jiraSetFixVersion(jira, version)
+
+    // Create tags
+    String tagName = "${chart}-${version}"
+    runSafely "git tag -a ${tagName} -m 'Release Update: ${version}'"
+    sshagent(credentials: [sonatypeZionCredentialsId()]) {
+      runSafely "git push origin ${tagName}"
     }
   },
   onSuccess: {
@@ -47,3 +99,48 @@ dockerizedBuildPipeline(
     buildNotifications(currentBuild, env, 'main')
   }
 )
+
+String verifyIndexYamlAndTarFile(String chart) {
+  // Get current version
+  def indexFile = readYaml file: 'docs/index.yaml'
+  String version = indexFile.entries[chart][0].version
+
+  // Check tar file
+  String repo_url = 'https://sonatype.github.io/helm3-charts/'
+  verifyDownloadLinks(
+    urlParts: [repo_url, chart, '-', version],
+    urlSuffixes: ['.tgz'], retryCount: 2, retryDelay: 60
+  )
+
+  // Get repository version
+  def response = httpRequest "${repo_url}/index.yaml"
+  def repositoryIndexFile = readYaml text:response.content
+  String repositoryVersion = repositoryIndexFile.entries[chart][0].version
+
+  if (!version.equals(repositoryVersion)) {
+    error "Released version: ${version} is different " +
+          "from helm repository version: ${repositoryVersion}"
+  }
+
+  return repositoryVersion
+}
+
+String calculateChartVersion(final String chartVersion, final String appVersion) {
+  if (chartVersion) {
+    return chartVersion
+  }
+
+  if (! appVersion) {
+    error 'Failed to calculate chartVersion with no appVersion.'
+  }
+
+  final versionParts = parseVersionString(appVersion)
+  final chartMajor = versionParts[1]
+  final chartMinor = versionParts[2]
+
+  if (! chartMajor || ! chartMinor) {
+    error "Failed to calculate chartVersion from appVersion: ${appVersion}"
+  }
+
+  return [chartMajor, chartMinor, '0'].join('.')
+}

@@ -1,24 +1,35 @@
+---
 statefulset:
   # This is not supported
   enabled: false
-# By default deploymentStrategy is set to rollingUpdate with maxSurge of 25% and maxUnavailable of 25% . you can change type to `Recreate` or can uncomment `rollingUpdate` specification and adjust them to your usage.
 deploymentStrategy: Recreate
 image:
   # Sonatype Official Public Image
   repository: sonatype/nexus3
-  tag: 3.37.0
+  tag: 3.42.0
   pullPolicy: IfNotPresent
+imagePullSecrets:
+# for image registries that require login, specify the name of the existing
+# kubernetes secret
+#   - name: <pull-secret-name>
 
 nexus:
   docker:
     enabled: false
-    registries: []
-    #  - host: chart.local
-    #    port: 5000
-    #    secretName: registrySecret
+    # registries:
+    #   - host: chart.local
+    #     port: 5000
+    #     secretName: registry-secret
   env:
-    - name: install4jAddVmParams
-      value: "-Xms1200M -Xmx1200M -XX:MaxDirectMemorySize=2G -XX:+UnlockExperimentalVMOptions -XX:+UseCGroupMemoryLimitForHeap"
+    # minimum recommended memory settings for a small, person instance from
+    # https://help.sonatype.com/repomanager3/product-information/system-requirements
+    - name: INSTALL4J_ADD_VM_PARAMS
+      value: |-
+        -Xms2703M -Xmx2703M
+        -XX:MaxDirectMemorySize=2703M
+        -XX:+UnlockExperimentalVMOptions
+        -XX:+UseCGroupMemoryLimitForHeap
+        -Djava.util.prefs.userRoot=/nexus-data/javaprefs
     - name: NEXUS_SECURITY_RANDOMPASSWORD
       value: "true"
   properties:
@@ -26,26 +37,29 @@ nexus:
     data:
       nexus.scripts.allowCreation: true
       # See this article for ldap configuratioon options https://support.sonatype.com/hc/en-us/articles/216597138-Setting-Advanced-LDAP-Connection-Properties-in-Nexus-Repository-Manager
-      #nexus.ldap.env.java.naming.security.authentication: simple
+      # nexus.ldap.env.java.naming.security.authentication: simple
   # nodeSelector:
   #   cloud.google.com/gke-nodepool: default-pool
-  resources: {}
-    # requests:
-      ## Based on https://support.sonatype.com/hc/en-us/articles/115006448847#mem
-      ## and https://twitter.com/analytically/status/894592422382063616:
-      ##   Xms == Xmx
-      ##   Xmx <= 4G
-      ##   MaxDirectMemory >= 2G
-      ##   Xmx + MaxDirectMemory <= RAM * 2/3 (hence the request for 4800Mi)
-      ##   MaxRAMFraction=1 is not being set as it would allow the heap
-      ##     to use all the available memory.
-      # cpu: 250m
-      # memory: 4800Mi
+  resources:
+  # minimum recommended memory settings for a small, person instance from
+  # https://help.sonatype.com/repomanager3/product-information/system-requirements
+  #   requests:
+  #     cpu: 4
+  #     memory: 8Gi
+  #   limits:
+  #     cpu: 4
+  #     memory: 8Gi
+
   # The ports should only be changed if the nexus image uses a different port
   nexusPort: 8081
 
+  # Default the pods UID and GID to match the nexus3 container.
+  # Customize or remove these values from the securityContext as appropriate for
+  # your deployment environment.
   securityContext:
-    fsGroup: 2000
+    runAsUser: 200
+    runAsGroup: 200
+    fsGroup: 200
   podAnnotations: {}
   livenessProbe:
     initialDelaySeconds: 30
@@ -66,8 +80,6 @@ nexus:
   #   - "example.com"
   #   - "www.example.com"
 
-
-imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
@@ -77,14 +89,14 @@ deployment:
   # # Add init containers. e.g. to be used to give specific permissions for nexus-data.
   # # Add your own init container or uncomment and modify the given example.
   initContainers:
-  # - name: fmp-volume-permission
-    # image: busybox
-    # imagePullPolicy: IfNotPresent
-    # command: ['chown','-R', '200', '/nexus-data']
-    # volumeMounts:
-      # - name: nexus-data
-        # mountPath: /nexus-data
-  # # Uncomment and modify this to run a command after starting the nexus container.
+  #   - name: fmp-volume-permission
+  #   image: busybox
+  #   imagePullPolicy: IfNotPresent
+  #   command: ['chown','-R', '200', '/nexus-data']
+  #   volumeMounts:
+  #     - name: nexus-data
+  #       mountPath: /nexus-data
+  # Uncomment and modify this to run a command after starting the nexus container.
   postStart:
     command:    # '["/bin/sh", "-c", "ls"]'
   preStart:
@@ -94,20 +106,17 @@ deployment:
   additionalVolumes:
   additionalVolumeMounts:
 
-
 ingress:
   enabled: false
-  annotations: {kubernetes.io/ingress.class: nginx}
-    # kubernetes.io/ingress.class: nginx
-    # kubernetes.io/tls-acme: "true"
+  ingressClassName: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
   hostPath: /
   hostRepo: repo.demo
-  tls: []
-    # - secretName: nexus-local-tls
-    #   hosts:
-    #     - nexus.local
-    #     - nexus-docker.local
-    #     - nexus-docker-hosted.local
+  # tls:
+  #   - secretName: nexus-local-tls
+  #     hosts:
+  #       - repo.demo
 
 
 service:
@@ -158,7 +167,7 @@ persistence:
 
 tolerations: []
 
-# # Enable configmap and add data in configmap	
+# Enable configmap and add data in configmap
 config:
   enabled: false
   mountPath: /sonatype-nexus-conf
@@ -179,6 +188,3 @@ serviceAccount:
   # The name of the service account to use.
   # If not set and create is true, a name is generated using the fullname template
   name: ""
-
-psp:
-  create: false
